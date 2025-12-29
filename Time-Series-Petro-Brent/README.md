@@ -1,3 +1,5 @@
+# Projeto de simulação de preço de petróleo - trabalho apresentado na formação do curso superior em Big Data
+
 ## Guia de Instalação e Execução
 
 #### 1. Coleta do projeto
@@ -40,3 +42,4 @@ Por fim, para executar o processo basta utilizar o terminal para inicializar a a
 #### 5. Acesso Web
 Também é possivel acessar o projeto diretamente na web através do link:
 > https://techchallenge4-g50.streamlit.app/
+
