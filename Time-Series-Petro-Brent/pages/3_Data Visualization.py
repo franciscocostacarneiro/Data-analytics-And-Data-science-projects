@@ -131,7 +131,7 @@ def generate_plot_interativo(df, agrupamento, range_ano):
 
     # Agrupando os dados conforme especificado
     if agrupamento == 'Diario':
-        df_generico2 = df_generico.groupby(df_generico['data'].dt.date)['valor'].mean().reset_index()
+        df_generico = df_generico.groupby(df_generico['data'].dt.date)['valor'].mean().reset_index()
         xlabel = 'Data (Dia)'
     elif agrupamento == 'Mensal':
         df_generico = df_generico.groupby(df_generico['data'].dt.to_period("M"))['valor'].mean().reset_index()
@@ -177,11 +177,12 @@ if st.session_state.clicked:
         with coluna1:
             abertura = st.selectbox("Abertura:", ["Anual", "Mensal", "Diario"])
         with coluna4:
+            ano_atual = pd.Timestamp.now().year
             range_ano = st.slider(
                 "Range de ano",
-                value=(1987, 2024),
-                min_value=(1987),
-                max_value=(2024)
+                value=(1987, ano_atual),
+                min_value=1987,
+                max_value=ano_atual
             )
         st.form_submit_button("Aplicar")
 

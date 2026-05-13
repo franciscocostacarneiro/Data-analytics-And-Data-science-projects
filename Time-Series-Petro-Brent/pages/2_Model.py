@@ -4,10 +4,15 @@ import pandas as pd
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
-from keras.models import load_model
-from keras.preprocessing.sequence import TimeseriesGenerator
+from tensorflow.keras.models import load_model
 from prophet.serialize import model_from_json
 from sklearn.preprocessing import MinMaxScaler
+
+
+def _make_sequences(data, look_back):
+    """Gera sequências temporais para o LSTM (substitui TimeseriesGenerator removido no Keras 3)."""
+    X = np.array([data[i:i + look_back] for i in range(len(data) - look_back)])
+    return X.reshape((X.shape[0], look_back, 1))
 
 # Checa e cria o estado da sessão se ainda não existe o dataframe "df_base".
 if "df_base" not in st.session_state:
@@ -41,10 +46,10 @@ def load_data():
                 dados.append([data, preco])
 
     df_base = pd.DataFrame(dados[2:], columns=['data', 'valor'])
-    df_base['data'] = pd.to_datetime(df_base['data'])
+    df_base['data'] = pd.to_datetime(df_base['data'], format='%d/%m/%Y')
     df_base['valor'] = df_base['valor'].astype(float)
     df_base.set_index('data', inplace=True)
-    df_base = df_base.asfreq('D').fillna(method='bfill')
+    df_base = df_base.asfreq('D').bfill()
     df_base = df_base.reset_index(drop=False)
 
 
@@ -103,68 +108,61 @@ def prever_lsmt(df, periodo):
 
 def validacao_lsmt(df):
     alpha = 0.09
+    df = df.copy()
     df['Smoothed_Close'] = df['y'].ewm(alpha=alpha, adjust=False).mean()
 
     close_data = df['Smoothed_Close'].values
-    close_data = close_data.reshape(-1, 1)  # transformar em array
+    close_data = close_data.reshape(-1, 1)
 
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaler = scaler.fit(close_data)
-    close_data = scaler.transform(close_data)
+    close_data_scaled = scaler.transform(close_data)
 
     split_percent = 0.80
-    split = int(split_percent * len(close_data))
+    split = int(split_percent * len(close_data_scaled))
 
-    close_train = close_data[:split]
-    close_test = close_data[split:]
+    close_test = close_data_scaled[split:]
+    look_back = 5  # consistente com o treinamento do modelo
 
-    look_back = 10
-
-    test_generator = TimeseriesGenerator(close_test, close_test, length=look_back, batch_size=1)
-
-    # 1. Fazer previsões usando o conjunto de teste
-    test_predictions = model.predict(test_generator)
-
-    # 2. Inverter qualquer transformação aplicada aos dados
+    X_test = _make_sequences(close_test, look_back)
+    test_predictions = model.predict(X_test)
     test_predictions_inv = scaler.inverse_transform(test_predictions.reshape(-1, 1))
-    test_actuals_inv = scaler.inverse_transform(np.array(close_test).reshape(-1, 1))
 
-    # Ajuste as dimensões
-    test_actuals_inv = test_actuals_inv[:len(test_predictions_inv)]
+    # Métricas calculadas sobre os preços REAIS (não suavizados) — holdout temporal
+    n = len(test_predictions_inv)
+    actual_prices = df['y'].values[split + look_back: split + look_back + n].reshape(-1, 1)
 
-    # Calcular o MAPE
-    mape = np.mean(np.abs((test_actuals_inv - test_predictions_inv) / test_actuals_inv)) * 100
+    mape = np.mean(np.abs((actual_prices - test_predictions_inv) / actual_prices)) * 100
+    rmse = np.sqrt(np.mean((actual_prices - test_predictions_inv) ** 2))
+    mae = np.mean(np.abs(actual_prices - test_predictions_inv))
 
-    return mape
+    return mape, rmse, mae
 
 def prever_prophet(df, periodo):
-
-    train_data = df.sample(frac=0.8, random_state=0)
-
     futuro = model.make_future_dataframe(periods=periodo, freq='D')
     previsao = model.predict(futuro)
     previsao = previsao[['ds', 'yhat']]
+    return previsao
 
-    return train_data, previsao
+def validacao_prophet(df, previsao):
+    # Holdout temporal: últimos 20% dos dados como conjunto de teste (não vistos pelo modelo)
+    split = int(0.80 * len(df))
+    test_data = df.iloc[split:][['ds', 'y']].copy()
 
-def validacao_prophet(train_data, previsao):
-    # Mesclar os DataFrames nas colunas 'ds' para comparar previsões e valores reais
-    resultados = pd.merge(previsao, train_data, on='ds', how='inner')
+    resultados = pd.merge(previsao, test_data, on='ds', how='inner')
 
-    # Calcular o erro percentual absoluto para cada ponto de dados
-    resultados['erro_percentual_absoluto'] = np.abs((resultados['y'] - resultados['yhat']) / resultados['y']) * 100
+    mape = np.mean(np.abs((resultados['y'] - resultados['yhat']) / resultados['y'])) * 100
+    rmse = np.sqrt(np.mean((resultados['y'] - resultados['yhat']) ** 2))
+    mae = np.mean(np.abs(resultados['y'] - resultados['yhat']))
 
-    # Calcular o MAPE
-    mape = np.mean(resultados['erro_percentual_absoluto'])
-
-    return mape
+    return mape, rmse, mae
 
 def construcao_df_prophet(df, previsao):
 
     df_final = pd.merge(df, previsao, on='ds', how='outer')
     df_final['tipo_dado'] = 'Dado Real'
     df_final.loc[df_final['y'].isnull(), 'tipo_dado'] = 'Dado Predito'
-    df_final['y'].fillna(df_final['yhat'], inplace=True)
+    df_final['y'] = df_final['y'].fillna(df_final['yhat'])
     df_final['y'] = df_final['y'].round(2).astype(float)
     df_final = df_final[['ds', 'y', 'tipo_dado']].rename(columns={'ds': 'data', 'y': 'valor'})
 
@@ -219,9 +217,9 @@ if st.session_state.model_clicked:
 
             st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
 
-            test_data, previsao = prever_prophet(st.session_state.processed_df, periodo)
+            previsao = prever_prophet(st.session_state.processed_df, periodo)
 
-            metricas = validacao_prophet(test_data, previsao)
+            mape, rmse, mae = validacao_prophet(st.session_state.processed_df, previsao)
 
             st.session_state.processed_df = construcao_df_prophet(st.session_state.processed_df, previsao)
 
@@ -231,22 +229,27 @@ if st.session_state.model_clicked:
 
             st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
 
-            metricas = validacao_lsmt(st.session_state.processed_df)
+            mape, rmse, mae = validacao_lsmt(st.session_state.processed_df)
 
             st.session_state.processed_df = prever_lsmt(st.session_state.processed_df, periodo)
 
         else:
             st.stop()
 
+        st.success('Modelo aplicado com sucesso!')
         st.markdown(f"""
-        Modelo aplicado!
+        #### Métricas de Avaliação — Holdout Temporal (últimos 20% dos dados)
+
+        | Métrica | Valor | Descrição |
+        |---|---|---|
+        | **MAPE** | {mape:.2f}% | Erro percentual absoluto médio sobre preços reais |
+        | **RMSE** | {rmse:.2f} USD | Raiz do erro quadrático médio (mesma unidade do preço) |
+        | **MAE** | {mae:.2f} USD | Erro absoluto médio |
+
+        > As métricas são calculadas comparando as previsões do modelo com os **preços reais**
+        > do conjunto de teste (holdout temporal — dados não utilizados no treinamento).
         
-        Porcentagem de Erro Percentual Médio obtido: {metricas:.2f}%
-        
-        Para visualizar os dados retornados é possivel acessar a aba "Data Visualization" onde serão construidos 
-        graficos baseados nos dados obtidos. 
-        
-        Também é possivel analisar o dataframe a seguir:
+        Para visualizar os dados retornados acesse a aba **Data Visualization**.
         """)
 
         st.dataframe(st.session_state.processed_df, width= 400)

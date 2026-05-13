@@ -71,15 +71,16 @@ class OrdinalFeature(BaseEstimator,TransformerMixin):
             return df
 
 class MinMaxWithFeatNames(BaseEstimator,TransformerMixin):
-    def __init__(self,min_max_scaler_ft = ['Idade', 'Rendimento_anual', 'Tamanho_familia', 'Anos_empregado']):
+    def __init__(self, min_max_scaler_ft=[
+        'Idade', 'Rendimento_anual', 'Tamanho_familia', 'Anos_empregado',
+        'Renda_per_capita', 'Score_patrimonio', 'Score_contatos', 'Renda_por_ano_emprego'
+    ]):
         self.min_max_scaler_ft = min_max_scaler_ft
-    def fit(self,df):
+    def fit(self, df):
         return self
-    def transform(self,df):
-        if (set(self.min_max_scaler_ft).issubset(df.columns)):
+    def transform(self, df):
+        cols_presentes = [c for c in self.min_max_scaler_ft if c in df.columns]
+        if cols_presentes:
             min_max_enc = MinMaxScaler()
-            df[self.min_max_scaler_ft] = min_max_enc.fit_transform(df[self.min_max_scaler_ft])
-            return df
-        else:
-            print('Uma ou mais features não estão no DataFrame')
-            return df
+            df[cols_presentes] = min_max_enc.fit_transform(df[cols_presentes])
+        return df
