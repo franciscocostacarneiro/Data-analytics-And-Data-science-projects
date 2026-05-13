@@ -14,7 +14,6 @@ try:
     TENSORFLOW_AVAILABLE = True
 except (ImportError, OSError):
     load_model = None
-    st.warning("⚠️ TensorFlow não disponível. Apenas Prophet será suportado nesta sessão.")
 
 
 def _make_sequences(data, look_back):
