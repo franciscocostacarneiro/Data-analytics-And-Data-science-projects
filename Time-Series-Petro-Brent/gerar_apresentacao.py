@@ -197,6 +197,7 @@ def build_cover(styles):
         Paragraph("<b>Autor:</b> Francisco Costa Carneiro", styles["Corpo"]),
         Paragraph("<b>Área:</b> Ciência de Dados · Finanças · Machine Learning · Séries Temporais", styles["Corpo"]),
         Paragraph("<b>Tecnologias:</b> Python · Streamlit · TensorFlow/Keras · Prophet · Scikit-learn · Pandas · BeautifulSoup", styles["Corpo"]),
+        Paragraph("<b>Aplicação:</b> <u><font color='#2563EB'>https://petrobrent.streamlit.app/</font></u>", styles["Corpo"]),
         Paragraph("<b>Data:</b> Maio de 2026", styles["Corpo"]),
     ]
     for p in info:
