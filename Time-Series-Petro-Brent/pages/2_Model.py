@@ -4,9 +4,17 @@ import pandas as pd
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
-from tensorflow.keras.models import load_model
 from prophet.serialize import model_from_json
 from sklearn.preprocessing import MinMaxScaler
+
+# Tentar importar TensorFlow; se não conseguir, usar Prophet como fallback
+TENSORFLOW_AVAILABLE = False
+try:
+    from tensorflow.keras.models import load_model
+    TENSORFLOW_AVAILABLE = True
+except (ImportError, OSError):
+    load_model = None
+    st.warning("⚠️ TensorFlow não disponível. Apenas Prophet será suportado nesta sessão.")
 
 
 def _make_sequences(data, look_back):
@@ -203,7 +211,11 @@ if st.session_state.model_clicked:
 
     coluna1, coluna2, coluna3 = st.columns([1,1,2])
     with coluna1:
-        modelo = st.selectbox("Modelo:", ["Prophet", "LSTM"])
+        if TENSORFLOW_AVAILABLE:
+            modelo = st.selectbox("Modelo:", ["Prophet", "LSTM"])
+        else:
+            modelo = st.selectbox("Modelo:", ["Prophet"])
+            st.info("💡 Apenas Prophet está disponível. TensorFlow não foi instalado no ambiente de deploy.")
     with coluna3:
         periodo = st.slider('Número de Dias para Previsão', 1, 365, 30)
 
@@ -224,14 +236,31 @@ if st.session_state.model_clicked:
             st.session_state.processed_df = construcao_df_prophet(st.session_state.processed_df, previsao)
 
         elif modelo == 'LSTM':
-
-            model = load_model('models/lstm_model.h5')
-
-            st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
-
-            mape, rmse, mae = validacao_lsmt(st.session_state.processed_df)
-
-            st.session_state.processed_df = prever_lsmt(st.session_state.processed_df, periodo)
+            
+            # Tentar carregar modelo LSTM com fallback para Prophet
+            if not TENSORFLOW_AVAILABLE:
+                st.warning("❌ LSTM não disponível. Usando Prophet como alternativa.")
+                with open('models/prophet_model.json', 'r') as path:
+                    model = model_from_json(json.load(path))
+                st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
+                previsao = prever_prophet(st.session_state.processed_df, periodo)
+                mape, rmse, mae = validacao_prophet(st.session_state.processed_df, previsao)
+                st.session_state.processed_df = construcao_df_prophet(st.session_state.processed_df, previsao)
+            else:
+                try:
+                    model = load_model('models/lstm_model.h5')
+                    st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
+                    mape, rmse, mae = validacao_lsmt(st.session_state.processed_df)
+                    st.session_state.processed_df = prever_lsmt(st.session_state.processed_df, periodo)
+                except Exception as e:
+                    st.error(f"❌ Erro ao carregar LSTM: {str(e)}")
+                    st.warning("Usando Prophet como alternativa...")
+                    with open('models/prophet_model.json', 'r') as path:
+                        model = model_from_json(json.load(path))
+                    st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
+                    previsao = prever_prophet(st.session_state.processed_df, periodo)
+                    mape, rmse, mae = validacao_prophet(st.session_state.processed_df, previsao)
+                    st.session_state.processed_df = construcao_df_prophet(st.session_state.processed_df, previsao)
 
         else:
             st.stop()
