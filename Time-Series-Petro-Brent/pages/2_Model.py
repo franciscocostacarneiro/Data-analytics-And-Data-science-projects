@@ -11,15 +11,15 @@ from sklearn.preprocessing import MinMaxScaler
 # Diretório base da aplicação (independente do cwd no Streamlit Cloud)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROPHET_MODEL_PATH = os.path.join(_BASE_DIR, 'models', 'prophet_model.json')
-LSTM_MODEL_PATH = os.path.join(_BASE_DIR, 'models', 'lstm_model.h5')
+LSTM_MODEL_PATH = os.path.join(_BASE_DIR, 'models', 'lstm_model.onnx')
 
-# Tentar importar TensorFlow; se não conseguir, usar Prophet como fallback
-TENSORFLOW_AVAILABLE = False
+# Tentar importar ONNX Runtime para inferência do LSTM (compatível com Python 3.14)
+ONNX_AVAILABLE = False
 try:
-    from tensorflow.keras.models import load_model
-    TENSORFLOW_AVAILABLE = True
-except (ImportError, OSError):
-    load_model = None
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
+except ImportError:
+    ort = None
 
 
 def _make_sequences(data, look_back):
@@ -75,7 +75,14 @@ def preparar_dataframe(df):
     return df
 
 
-def prever_lsmt(df, periodo):
+def _lstm_predict(session, x):
+    """Executa inferência ONNX Runtime no modelo LSTM."""
+    input_name = session.get_inputs()[0].name
+    output_name = session.get_outputs()[0].name
+    return session.run([output_name], {input_name: x.astype(np.float32)})[0][0][0]
+
+
+def prever_lsmt(df, periodo, session):
 
     alpha = 0.09
     df['Smoothed_Close'] = df['y'].ewm(alpha=alpha, adjust=False).mean()
@@ -97,7 +104,7 @@ def prever_lsmt(df, periodo):
     for _ in range(periodo):
         x = prediction_list[-look_back:]
         x = x.reshape((1, look_back, 1))
-        out = model.predict(x)[0][0]
+        out = _lstm_predict(session, x)
         prediction_list = np.append(prediction_list, out)
     forecast = prediction_list[look_back - 1:]
 
@@ -119,7 +126,7 @@ def prever_lsmt(df, periodo):
 
     return df_final
 
-def validacao_lsmt(df):
+def validacao_lsmt(df, session):
     alpha = 0.09
     df = df.copy()
     df['Smoothed_Close'] = df['y'].ewm(alpha=alpha, adjust=False).mean()
@@ -138,7 +145,9 @@ def validacao_lsmt(df):
     look_back = 5  # consistente com o treinamento do modelo
 
     X_test = _make_sequences(close_test, look_back)
-    test_predictions = model.predict(X_test)
+    input_name = session.get_inputs()[0].name
+    output_name = session.get_outputs()[0].name
+    test_predictions = session.run([output_name], {input_name: X_test.astype(np.float32)})[0]
     test_predictions_inv = scaler.inverse_transform(test_predictions.reshape(-1, 1))
 
     # Métricas calculadas sobre os preços REAIS (não suavizados) — holdout temporal
@@ -216,11 +225,11 @@ if st.session_state.model_clicked:
 
     coluna1, coluna2, coluna3 = st.columns([1,1,2])
     with coluna1:
-        if TENSORFLOW_AVAILABLE:
+        if ONNX_AVAILABLE:
             modelo = st.selectbox("Modelo:", ["Prophet", "LSTM"])
         else:
             modelo = st.selectbox("Modelo:", ["Prophet"])
-            st.info("💡 Apenas Prophet está disponível. TensorFlow não foi instalado no ambiente de deploy.")
+            st.info("💡 Apenas Prophet está disponível neste ambiente.")
     with coluna3:
         periodo = st.slider('Número de Dias para Previsão', 1, 365, 30)
 
@@ -241,31 +250,21 @@ if st.session_state.model_clicked:
             st.session_state.processed_df = construcao_df_prophet(st.session_state.processed_df, previsao)
 
         elif modelo == 'LSTM':
-            
-            # Tentar carregar modelo LSTM com fallback para Prophet
-            if not TENSORFLOW_AVAILABLE:
-                st.warning("❌ LSTM não disponível. Usando Prophet como alternativa.")
+
+            try:
+                session = ort.InferenceSession(LSTM_MODEL_PATH)
+                st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
+                mape, rmse, mae = validacao_lsmt(st.session_state.processed_df, session)
+                st.session_state.processed_df = prever_lsmt(st.session_state.processed_df, periodo, session)
+            except Exception as e:
+                st.error(f"❌ Erro ao carregar LSTM: {str(e)}")
+                st.warning("Usando Prophet como alternativa...")
                 with open(PROPHET_MODEL_PATH, 'r') as path:
                     model = model_from_json(json.load(path))
                 st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
                 previsao = prever_prophet(st.session_state.processed_df, periodo)
                 mape, rmse, mae = validacao_prophet(st.session_state.processed_df, previsao)
                 st.session_state.processed_df = construcao_df_prophet(st.session_state.processed_df, previsao)
-            else:
-                try:
-                    model = load_model(LSTM_MODEL_PATH)
-                    st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
-                    mape, rmse, mae = validacao_lsmt(st.session_state.processed_df)
-                    st.session_state.processed_df = prever_lsmt(st.session_state.processed_df, periodo)
-                except Exception as e:
-                    st.error(f"❌ Erro ao carregar LSTM: {str(e)}")
-                    st.warning("Usando Prophet como alternativa...")
-                    with open(PROPHET_MODEL_PATH, 'r') as path:
-                        model = model_from_json(json.load(path))
-                    st.session_state.processed_df = preparar_dataframe(st.session_state.df_base)
-                    previsao = prever_prophet(st.session_state.processed_df, periodo)
-                    mape, rmse, mae = validacao_prophet(st.session_state.processed_df, previsao)
-                    st.session_state.processed_df = construcao_df_prophet(st.session_state.processed_df, previsao)
 
         else:
             st.stop()
